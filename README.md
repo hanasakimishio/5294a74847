@@ -30,9 +30,9 @@
 3. **就在这个对话里**用 haiku 随便发一条（比如"在吗"）→ 看到
    `✓ 模板已捕获（对话 xxxxxxxx…）`，核对对话号是你要救的那个。
 4. 回到 Console 运行：`resume45("想说的第一句话")`。
-   - 回复会**实时打印在 Console** 里，不用等刷新。
-   - 流结束后自动刷新，进 UI 看完整对话。
-   - 回复可能落在一个新分支（消息上方 `< 2/2 >`），点一下切过去即可。
+   - 4.5 接住全部历史开始回复，**实时打印在 Console**。
+   - 回复同时存进 `window.__last45reply`，运行 `copy(window.__last45reply)` 复制全文。
+   - **想在 claude.ai 界面里看这条回复，手动刷新页面（F5）即可**，它已经写进对话了。
 
 > 页面一刷新，hook 和模板就清空了，想再发就重复上面的步骤。
 > 建议把脚本存成 Chrome Snippet（Sources → Snippets → New → 粘贴 → `Ctrl+S`），
@@ -41,16 +41,23 @@
 ## 原理
 
 claude.ai 发消息时，会向 `chat_conversations/<uuid>/completion` POST 一个请求，
-body 里带着 `model`、`prompt`、`parent_message_uuid` 等字段。脚本：
+body 里带着 `model`、`prompt`、`parent_message_uuid`、`turn_message_uuids` 等字段。
+脚本：
 
 1. Hook `window.fetch`，捕获这个请求模板（含全部 headers / cookie）。
 2. 把 `body.model` 改成 `claude-opus-4-5-20251101`。
-3. 删掉新 schema 不再接受的 `human_message_uuid` / `assistant_message_uuid`。
-4. **原样保留** `conversation_uuid` 和 `parent_message_uuid` 后重新发送 ——
-   服务器就在原对话末尾接着用 4.5 续写。
+3. **查对话的 `current_leaf_message_uuid` 当 `parent_message_uuid`** ——
+   接在对话真正的末尾，避免"接续点已被占用"导致的 `409`。
+4. **给 `turn_message_uuids` 换一套全新 uuid** —— 这是服务器的幂等键，
+   沿用旧值会被判定为重复提交（`409 This message was already sent`）。
+5. 原样保留 `conversation_uuid` 后重新发送 —— 服务器就在原对话末尾用 4.5 续写。
+6. 边收流边打印回复、累积到 `window.__last45reply`，**不自动刷新页面**。
 
 ## 故障排查
 
+- **`409 This message was already sent`**：本脚本已自动处理（刷新
+  `turn_message_uuids` + 对齐 `current_leaf`）。若仍出现，可能 schema 又变了 ——
+  把请求 body 的字段打印出来排查。
 - **`400 ... Extra inputs are not permitted`**：API schema 又更新了。
   在 `delete body.human_message_uuid` 附近再加一行 `delete body.那个字段名`。
 - **报错里有 `model` / `permission` / `not available`**：账号可能已无 4.5 权限，
@@ -62,7 +69,8 @@ body 里带着 `model`、`prompt`、`parent_message_uuid` 等字段。脚本：
 原理基于 reddit r/ClaudeAIJailbreak 社区 **u/Shayla4Ever** 的帖子
 *"Workaround for starting new Opus 4.5 chats"*。
 本仓库在其基础上做了自动化（免去手动 Copy as fetch + 替换 UUID）、
-适配了 2026/4 之后的新 API schema，并把"开新对话"改为"在原对话续写"。
+适配了 2026/4 之后的新 API schema（`turn_message_uuids` 幂等键、`current_leaf`
+接续点对齐），并把"开新对话"改为"在原对话续写"。
 
 ## License
 

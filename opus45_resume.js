@@ -1,6 +1,6 @@
 /**
  * ============================================================
- *   Opus 4.5 续写器 —— 让被限制的对话重新用 Opus 4.5 继续
+ *   Opus 4.5 续写器 v4 —— 让被限制的对话重新用 Opus 4.5 继续
  * ============================================================
  *
  * 【适用场景】
@@ -13,12 +13,22 @@
  *   不开新对话 —— 而是【复用】目标对话已有的 conversation_uuid，
  *   让 4.5 接住这个对话的全部历史，在原地继续往下写。
  *
+ * 【v4 修了什么（都是实测踩出来的坑）】
+ *   1. 自动对齐接续点：发送前先查对话的 current_leaf_message_uuid 当 parent，
+ *      避免"接续点已被占用"导致的 409。
+ *   2. 刷新幂等键：claude.ai 用 body.turn_message_uuids 防重复提交，重发时必须
+ *      给它换一套全新 uuid，否则报 409 "This message was already sent"。
+ *      （新版 schema 已没有 human_message_uuid / assistant_message_uuid，
+ *       它俩被合并进了 turn_message_uuids 这个对象。）
+ *   3. 不再自动刷新页面：回复打印在 Console 并存进 window.__last45reply
+ *      （运行 copy(window.__last45reply) 复制全文）。早期版本发完会自动刷新，
+ *       结果把 Console 里正在看的回复一起冲掉 —— 拆了。
+ *
  * 【为什么这招通常有效】
  *   1. 如果这个对话现在还能用 haiku 回复，说明它的 /completion 通道是通的，
  *      服务器愿意为它生成回复，只是 UI 把模型锁成了 haiku。
  *   2. 付费账号绕过 UI 直接调 API 时，endpoint 依然接受 4.5 的 model 参数。
- *   3. model 是【每一次请求】带上去的参数，不是对话出生时固定的；
- *      haiku 能发，就说明这个字段是活的、可改的。
+ *   3. model 是【每一次请求】带上去的参数，不是对话出生时固定的。
  *   → 在这个对话里把请求的 model 换成 4.5，服务器大概率会用 4.5 继续。
  *
  *   ⚠️ 唯一的变数是 "chat paused" 的真实机制。如果它是【服务端】对这个
@@ -31,16 +41,14 @@
  *
  * 【使用步骤】
  *   1. 打开那个【被限制的、重要的对话】（现在只能用 haiku 那个）
- *   2. F12 → Console，粘贴本脚本，回车
- *      → 看到 "✓ Opus 4.5 续写器已就绪"
+ *   2. F12 → Console，粘贴本脚本，回车 → 看到 "✓ ... 已就绪"
  *   3. 就在这个对话里，用 haiku 随便发一条消息（比如打个"在吗"）
- *      → 看到 "✓ 模板已捕获（对话 xxxxxxxx…）"
- *      → 核对括号里的 8 位对话号，确认就是你要救的那个对话
+ *      → 看到 "✓ 模板已捕获（对话 xxxxxxxx…）"，核对对话号是你要救的那个
  *   4. 回到 Console，运行：
  *        resume45("想说的第一句话")
- *      → 4.5 会接住这个对话的全部历史开始回复
- *      → 回复会【实时打印在 Console 里】，不用等刷新就能看到
- *      → 流结束后自动刷新页面，进 UI 看完整渲染
+ *      → 4.5 接住全部历史开始回复，实时打印在 Console
+ *      → 回复同时存进 window.__last45reply，运行 copy(window.__last45reply) 复制全文
+ *      → 想在 claude.ai 界面里看这条回复，手动刷新页面（F5），它已经写进对话了
  *
  * 【刷新之后】
  *   页面一刷新，hook 和模板都会清空。想再发就重复 2→3→4。
@@ -49,20 +57,21 @@
  *   刷新后右键 Run 一下即可。
  *
  * 【可能看到的情况】
- *   · 回复出现在一个【新分支】里（消息上方有 "< 2/2 >" 那种切换器）：
- *     正常。点一下切到 4.5 那条即可。那条 haiku 插话不会污染上下文，
- *     因为 4.5 接住的是 haiku 之前的对话末尾。
- *   · 报 400 "xxx: Extra inputs are not permitted"：
- *     API schema 又更新了，在 delete body.human_message_uuid 附近
- *     再加一行 delete body.那个字段名。
- *   · 报错信息里有 "model" / "permission" / "not available"：
- *     可能就是 paused 服务端硬降级了。把报错原文贴出来排查（或提 issue）。
+ *   · 回复落在一个新分支（消息上方有 "< 2/2 >" 切换器）：点一下切过去即可。
+ *     （v4 默认接在 current_leaf 后面，通常会直接显示在对话末尾。）
+ *
+ * 【故障排查】
+ *   · 409 "This message was already sent"：v4 已自动处理（刷新 turn_message_uuids
+ *     + 对齐 leaf）。若仍出现，可能 schema 又变了 —— 把请求 body 的字段贴出来排查。
+ *   · 400 "xxx: Extra inputs are not permitted"：在 delete body.human_message_uuid
+ *     附近再加一行 delete body.那个字段名。
+ *   · 报错信息里有 "model" / "permission" / "not available"：账号可能已无 4.5 权限，
+ *     或目标对话被服务端硬降级 —— 这种情况脚本无能为力。
  *
  * 【Credit】
  *   原理基于 reddit r/ClaudeAIJailbreak 社区 u/Shayla4Ever 的帖子
- *   "Workaround for starting new Opus 4.5 chats"。本脚本在其基础上做了
- *   自动化（免去手动 Copy as fetch + 替换 UUID），适配了 2026/4 之后的
- *   新 API schema，并把"开新对话"改为"在原对话续写"。
+ *   "Workaround for starting new Opus 4.5 chats"。本脚本在其基础上做了自动化、
+ *   适配了 2026/4 之后的新 API schema，并把"开新对话"改为"在原对话续写"。
  *
  * 【免责声明】
  *   非官方方法，Anthropic 随时可能改动 API 使其失效，自负风险。
@@ -85,11 +94,7 @@
           options.method === "POST" &&
           options.body
         ) {
-          window.__opus45Template = {
-            url: url,
-            headers: options.headers,
-            body: options.body,
-          };
+          window.__opus45Template = { url, headers: options.headers, body: options.body };
           const mm = url.match(/chat_conversations\/([0-9a-f-]+)\/completion/);
           console.log(
             "%c✓ 模板已捕获" + (mm ? "（对话 " + mm[1].slice(0, 8) + "…）" : ""),
@@ -104,60 +109,74 @@
 
   // ---- 在"当前捕获到的那个对话"里，用 4.5 续写 ----
   window.resume45 = async function (message) {
-    if (!window.__opus45Template) {
+    const t = window.__opus45Template;
+    if (!t) {
       console.error(
-        "%c❌ 还没捕获到模板 —— 请先在这个对话里用 haiku 发一条消息",
+        "%c❌ 还没捕获到模板 —— 先在这个对话里用 haiku 发一条消息",
         "color:#E8638B;font-weight:bold"
       );
       return;
     }
-    if (!message) {
-      message = prompt("想对这个对话的 Opus 4.5 说什么？") || "我们继续吧";
-    }
+    if (!message) message = prompt("想对这个对话的 Opus 4.5 说什么？") || "我们继续吧";
 
-    const tmpl = window.__opus45Template;
-
-    // 关键：URL 原样不动 —— 它已经指向目标对话。不生成新 UUID。
-    const url = tmpl.url;
+    const url = t.url;
     const m = url.match(/chat_conversations\/([0-9a-f-]+)\/completion/);
     const convUuid = m ? m[1] : null;
 
     let body;
     try {
-      body = typeof tmpl.body === "string" ? JSON.parse(tmpl.body) : tmpl.body;
+      body = typeof t.body === "string" ? JSON.parse(t.body) : JSON.parse(JSON.stringify(t.body));
     } catch (e) {
       console.error("解析 body 失败:", e);
       return;
     }
 
-    body.model = MODEL;       // 把 haiku 换成 4.5
-    body.prompt = message;    // 换成你真正想说的话
-    delete body.human_message_uuid;     // 新 schema 不收
-    delete body.assistant_message_uuid; // 新 schema 不收
-    // 注意：parent_message_uuid 故意【保留】—— 它让 4.5 接在对话末尾，
-    //       而不是从头开始。别删它。
+    // 1) 查对话当前最新 leaf 当 parent（避免接续点已被占用导致的 409）
+    const detailUrl =
+      url.replace(/\/completion(\?.*)?$/, "") +
+      "?tree=True&rendering_mode=messages&render_all_tools=true";
+    let parent = null;
+    try {
+      const cr = await window.fetch(detailUrl, { headers: t.headers, credentials: "include" });
+      if (cr.ok) {
+        const conv = await cr.json();
+        parent =
+          conv.current_leaf_message_uuid ||
+          (conv.chat_messages?.length ? conv.chat_messages[conv.chat_messages.length - 1].uuid : null);
+      }
+    } catch (e) {
+      console.warn("查 leaf 异常:", e);
+    }
+
+    body.model = MODEL;
+    body.prompt = message;
+    if (parent) body.parent_message_uuid = parent;
+
+    // 2) 刷新 turn_message_uuids —— 幂等键，旧值会被判 "already sent" (409)
+    if (body.turn_message_uuids && typeof body.turn_message_uuids === "object") {
+      const fresh = {};
+      for (const k in body.turn_message_uuids) fresh[k] = crypto.randomUUID();
+      body.turn_message_uuids = fresh;
+    }
+    delete body.human_message_uuid;
+    delete body.assistant_message_uuid;
 
     console.log(
-      "%c⏳ 正在让 Opus 4.5 在这个对话里继续…",
+      "%c⏳ 让 Opus 4.5 在这个对话里继续…（parent=" + parent + "）",
       "color:#E8638B;font-weight:bold"
     );
 
     try {
       const res = await window.fetch(url, {
         method: "POST",
-        headers: tmpl.headers,
+        headers: t.headers,
         body: JSON.stringify(body),
         credentials: "include",
       });
 
       if (!res.ok) {
         console.error("%c❌ 请求失败: " + res.status, "color:#c00");
-        const errText = await res.text();
-        console.error(errText);
-        console.error(
-          "%c↑ 把上面这段完整报错贴出来排查（或提 issue）",
-          "color:#666"
-        );
+        console.error(await res.text());
         return;
       }
 
@@ -167,83 +186,52 @@
       );
       console.log("%c" + "—".repeat(28), "color:#E8638B");
 
-      // ---- 边收流边把回复打印到 Console（容错解析 SSE）----
+      // ---- 边收流边打印，并累积全文（不自动刷新）----
       const reader = res.body.getReader();
-      const decoder = new TextDecoder();
+      const dec = new TextDecoder();
       let buf = "";
-      let printedAnything = false;
-
-      (async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-
-            // 按行扫 data: {...}，宽容地把增量文本抠出来
-            let nl;
-            while ((nl = buf.indexOf("\n")) >= 0) {
-              const line = buf.slice(0, nl).trim();
-              buf = buf.slice(nl + 1);
-              if (!line.startsWith("data:")) continue;
-              const payload = line.slice(5).trim();
-              if (!payload || payload === "[DONE]") continue;
-              try {
-                const obj = JSON.parse(payload);
-                const piece =
-                  obj.completion ??
-                  obj.delta?.text ??
-                  obj.text ??
-                  obj.delta?.completion ??
-                  "";
-                if (piece) {
-                  printedAnything = true;
-                  console.log("%c" + piece, "color:#E8638B");
-                }
-              } catch (e) {
-                /* 这一行不是干净 JSON，跳过 */
-              }
+      let full = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const p = line.slice(5).trim();
+          if (!p || p === "[DONE]") continue;
+          try {
+            const o = JSON.parse(p);
+            const piece = o.completion ?? o.delta?.text ?? o.text ?? o.delta?.completion ?? "";
+            if (piece) {
+              full += piece;
+              console.log("%c" + piece, "color:#E8638B");
             }
+          } catch (e) {
+            /* 这一行不是干净 JSON，跳过 */
           }
-        } finally {
-          console.log("%c" + "—".repeat(28), "color:#E8638B");
-          if (!printedAnything) {
-            console.log(
-              "%c（流式格式可能变了，没解析出文字。回复多半已写进对话，刷新即可看到。）",
-              "color:#666"
-            );
-          }
-          console.log(
-            "%c✓ 生成结束，刷新进 UI 看完整对话…",
-            "color:#E8638B;font-weight:bold"
-          );
-          if (convUuid) window.location.href = "/chat/" + convUuid;
-          else window.location.reload();
         }
-      })();
+      }
+
+      window.__last45reply = full;
+      console.log("%c" + "—".repeat(28), "color:#E8638B");
+      console.log(
+        "%c✓ 完成。回复已存进 window.__last45reply —— 运行 copy(window.__last45reply) 复制全文。",
+        "color:#E8638B;font-weight:bold"
+      );
+      console.log(
+        "%c想在 claude.ai 界面里看这条回复，手动刷新页面（F5）即可，它已经写进对话了。",
+        "color:#666"
+      );
     } catch (e) {
       console.error("❌ 发送异常:", e);
     }
   };
 
   console.log(
-    "%c✓ Opus 4.5 续写器已就绪",
-    "color:#E8638B;font-weight:bold;font-size:16px"
+    "%c✓ Opus 4.5 续写器 v4 已就绪 — 在对话里用 haiku 发一条抓模板，再跑 resume45(\"你的话\")",
+    "color:#E8638B;font-weight:bold;font-size:15px"
   );
-  if (window.__opus45Template) {
-    const m = window.__opus45Template.url.match(
-      /chat_conversations\/([0-9a-f-]+)\/completion/
-    );
-    console.log(
-      "%c模板已就绪（对话 " +
-        (m ? m[1].slice(0, 8) + "…" : "?") +
-        "），直接运行: resume45(\"我们继续吧\")",
-      "color:#666"
-    );
-  } else {
-    console.log(
-      "%c下一步: 在这个对话里用 haiku 发一条消息抓模板，然后 resume45(\"你的话\")",
-      "color:#666"
-    );
-  }
 })();
