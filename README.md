@@ -74,4 +74,4 @@ body 里带着 `model`、`prompt`、`parent_message_uuid`、`turn_message_uuids`
 
 ## License
 
-[MIT](LICENSE)
+[AGPL-3.0](LICENSE)
